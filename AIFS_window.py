@@ -24,9 +24,17 @@ class AIFSChatApp:
         self.text_entry.pack(padx=10, pady=10, fill=tk.X)
         self.text_entry.bind("<Return>", self.handle_user_input)
 
+        # The button frame that contains all the buttons.
+        self.button_frame = tk.Frame(root)
+        self.button_frame.pack(side=tk.RIGHT, pady=5, fill=tk.X)
+
+        # The file upload button
+        self.upload_button = tk.Button(self.button_frame, text="Image Upload", command=self.handle_image_upload)
+        self.upload_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
         # The send button
-        self.send_button = tk.Button(root, text="Send", command=self.handle_user_input)
-        self.send_button.pack(padx=10, pady=5, side=tk.RIGHT)
+        self.send_button = tk.Button(self.button_frame, text="Send", command=self.handle_user_input)
+        self.send_button.pack(padx=10, side=tk.RIGHT, expand=True, fill=tk.X)
 
         # The AIFS agent to get the answer
         self.agent = AIFSAgent(api_key=api_key, chat_model=used_chat_model, embedding_model=used_embedding_model, completion_model=used_completion_model)
@@ -35,11 +43,12 @@ class AIFSChatApp:
         self.image_references = []
 
         # The numbers for the RAG answering
-        self.initial_greeting_k = 1
-        self.rag_k = 1
+        self.initial_greeting_k = 10
+        self.rag_k = 1 # General version, it would be the real number of the gathered documents
+        self.rag_k_keyword = 10 # for the keyword-matching version, the number of documents to gather for keyword-matching, it will output only one doc.
 
         # Display the intial information from the assistant
-        self.initial_greeting()
+        # self.initial_greeting()
 
     def initial_greeting(self):
         """
@@ -49,24 +58,27 @@ class AIFSChatApp:
         self.text_entry.config(state=tk.DISABLED) # Disable the user input
         self.send_button.config(state=tk.DISABLED) # Disable the send button
         # Get the initial system context
-        initial_greeting_context, seasonal_offer_indices = self.agent.build_rag_initial_context(k=1)
+        initial_greeting_context, seasonal_offer_indices = self.agent.build_rag_initial_context(k=self.initial_greeting_k)
+        for article_id in seasonal_offer_indices:
+            print(self.agent.preprocessed_hm_articles.loc[article_id, "combined"])
         # Add the initial fake message to give the context
         self.agent.add_message(role="system", content=initial_greeting_context)
         # Get the response
-        initial_rag_response = self.agent.generate_rag_response(nb_context=len(seasonal_offer_indices))
-        initial_response = initial_rag_response["answer"]
-        used_context = initial_rag_response["used_context"]
-        print(initial_rag_response)
+        initial_response = self.agent.generate_rag_response(doc_indices=seasonal_offer_indices)
         # Add the response to the message history
         self.agent.add_message(role="assistant", content=initial_response)
-        print(self.agent.get_history())
         # Get the image paths
         image_paths = []
-        for context_id in used_context:
-            image_paths.append(self.agent.get_image_path(seasonal_offer_indices[context_id]))
-        print(image_paths)
+        for article_id in seasonal_offer_indices:
+            image_paths.append(self.agent.get_image_path(article_id))
         # Display the response and the images
         self.root.after(0, lambda: self.update_dialog_display_with_images(initial_response, image_paths)) 
+
+    def handle_image_upload(self):
+        """
+        This function handles the file upload process.
+        """
+        pass
 
     def handle_user_input(self, event=None):
         """
@@ -112,19 +124,19 @@ class AIFSChatApp:
             self.root.after(0, self.update_dialog_display, response)
         else:
             # Set the user input
-            modified_user_input, article_indices = self.agent.build_rag_user_input(user_input, k=self.rag_k)
+            modified_user_input, article_indices = self.agent.build_rag_user_input_keyword_match(user_input, k=self.rag_k_keyword)
+            for article_id in article_indices:
+                print(self.agent.preprocessed_hm_articles.loc[article_id, "combined"])
             # Add the message to the agent history
             self.agent.add_message(role="user", content=modified_user_input)
             # Get the response
-            rag_response = self.agent.generate_rag_response(nb_context=len(article_indices))
-            response = rag_response["answer"]
-            used_context = rag_response["used_context"]
+            response = self.agent.generate_rag_response(doc_indices=article_indices)
             # Add the response to the message history
             self.agent.add_message(role="assistant", content=response)
             # Get the image paths
             image_paths = []
-            for context_id in used_context:
-                image_paths.append(self.agent.get_image_path(article_indices[context_id]))
+            for article_id in article_indices:
+                image_paths.append(self.agent.get_image_path(article_id))
             # Display the response and the images
             self.root.after(0, lambda: self.update_dialog_display_with_images(response, image_paths)) 
 
