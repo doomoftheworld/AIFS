@@ -1,14 +1,17 @@
 import openai
 import faiss
 import random
+import math
+import itertools
 from sentence_transformers import SentenceTransformer, util
 from datetime import date
 from common_imports import np, pd, tqdm
 from constant import *
-from common_use_functions import read_csv_to_pd_df, content_existence, create_directory, path_join
+from common_use_functions import read_csv_to_pd_df, content_existence, create_directory, path_join, encode_and_resize_image, anonymize_fashion_image, whiten_fashion_image
 
 class AIFSAgent:
-    def __init__(self, api_key, chat_model="gpt-3.5-turbo", embedding_model="text-embedding-3-small", completion_model="gpt-3.5-turbo-instruct"):
+    def __init__(self, api_key, chat_model="gpt-3.5-turbo", 
+                 embedding_model="text-embedding-3-small", completion_model="gpt-3.5-turbo-instruct", vision_desc_model="gpt-4o"):
         """
         Initialize the AIFSAgent.
 
@@ -33,68 +36,29 @@ class AIFSAgent:
         useful_info_uniq_vals = {}
         for col_name in useful_hm_info_cols:
             ordered_values = self.hm_articles[col_name].value_counts().keys().to_list()
-            useful_info_uniq_vals[col_name] = [elem for elem in ordered_values if elem != "Unknown" and "Other" not in elem][:20]
+            useful_info_uniq_vals[col_name] = [elem for elem in ordered_values if elem != "Unknown" and "Other" not in elem]
         # Build the useful feature info
         self.useful_feature_info = "\n".join(["- "+col_name.replace("_", " ") + ": " + "|".join(useful_info_uniq_vals[col_name]) 
                                          for col_name in useful_info_uniq_vals])
-        # # Load the embeddings
-        # self.preprocessed_hm_articles = None
-        # if content_existence(hm_info_embeddings):
-        #     self.preprocessed_hm_articles = pd.read_pickle(hm_info_embeddings)
-        # else:
-        #     self.preprocessed_hm_articles = self.preprocess_hm_knowledge_base()
-        #     create_directory(precomputed_data_path)
-        #     self.preprocessed_hm_articles.to_pickle(hm_info_embeddings)
-        # self.hm_embeddings = np.array(self.preprocessed_hm_articles['embedding'].to_list())
-        # # Build the search index
-        # self.RAG_index = faiss.IndexFlatIP(self.hm_embeddings.shape[1])
-        # self.RAG_index.add(self.hm_embeddings)
-        # # Type analysis model
-        # self.completion_model = completion_model
-        # # Free embedding model
-        # self.free_embedd_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
-        # # The chat history length to use
-        # self.history_length = 3
-
-    # This function applies a post-processing to match-keywords and determine similarity.
-    def match_keywords(self, article_indices, rag_search_input, input):
-        """
-        This function applies a post-processing to find the most macthed article in the found top-k ones.
-
-        article_indices: The found articles.
-        rag_search_input: The input built for the rag search.
-        input: The original input.
-        """
-        # Build the dictionary
-        article_key_match_dict = {}
-        combined_input = rag_search_input + input
-        lower_rag_search_input = rag_search_input.lower().strip()
-        for article_id in article_indices:
-            current_article_info = self.preprocessed_hm_articles.loc[article_id,:]
-            current_article_color = current_article_info["colour_group_name"].lower().strip()
-            nb_found_keys = 0
-            for col_name in rag_must_provide_info_cols:
-                current_article_col_val = current_article_info[col_name].lower().strip()
-                if current_article_col_val in lower_rag_search_input:
-                    nb_found_keys += 1
-            if current_article_color == "gray" or current_article_color == "grey":
-                if "gray" in lower_rag_search_input or "grey" in lower_rag_search_input:
-                    article_key_match_dict[article_id] = [nb_found_keys]
-            else:
-                if current_article_color in lower_rag_search_input:
-                    article_key_match_dict[article_id] = [nb_found_keys]
-        # Evaluate the reduced embedding similarity
-        for article_id in article_key_match_dict:
-            current_article_info = self.preprocessed_hm_articles.loc[article_id,:]
-            current_article_text = ";".join([col_name.replace("_"," ")+": "+current_article_info[col_name] for col_name in rag_must_provide_info_cols])
-            if not pd.isna(current_article_info["detail_desc"]):
-                current_article_text = current_article_text + "; " + current_article_info["detail_desc"]
-            current_embeddings = self.free_embedd_model.encode([combined_input, current_article_text])
-            article_key_match_dict[article_id].append(util.cos_sim(current_embeddings[0], current_embeddings[1]).item())
-        # Sort the remaining articles
-        sorted_key_match_dict = {k: v for k, v in sorted(article_key_match_dict.items(), key=lambda item: (item[1][0], item[1][1]), reverse=True)}
-
-        return sorted_key_match_dict
+        # Load the embeddings
+        self.preprocessed_hm_articles = None
+        if content_existence(hm_info_embeddings):
+            self.preprocessed_hm_articles = pd.read_pickle(hm_info_embeddings)
+        else:
+            self.preprocessed_hm_articles = self.preprocess_hm_knowledge_base_with_selected_columns()
+            create_directory(precomputed_data_path)
+            self.preprocessed_hm_articles.to_pickle(hm_info_embeddings)
+        self.hm_embeddings = np.array(self.preprocessed_hm_articles['embedding'].to_list())
+        # Build the search index
+        self.RAG_index = faiss.IndexFlatIP(self.hm_embeddings.shape[1])
+        self.RAG_index.add(self.hm_embeddings)
+        # Other models
+        self.completion_model = completion_model
+        self.vision_desc_model = vision_desc_model
+        # Free embedding model
+        self.free_embedd_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+        # The chat history length to use
+        self.history_length = 3
 
     # Season determination
     def get_season(self, date):
@@ -136,11 +100,11 @@ class AIFSAgent:
         - Requests coordination advice ("what shoes match this?", "goes with my...")
 
         2. **simple**: ALL of these are true:
-        - Requests fashion advice
+        - Requests fashion and clothing advice (e.g., mentioning a product name -> "I want a off-the-shoulder", asking for fashion advices -> "Do you have any suggestion for casual wears?")
         - Doesn't mention specific owned items
         - Not a coordination request
 
-        3. **other**: Unrelated to fashion
+        3. **other**: Unrelated to fashion or clothing.
 
         ### Conversation History:
         {history}
@@ -170,8 +134,6 @@ class AIFSAgent:
         Rewrite the question using chat history and product features
 
         question: The question to be rewrited.
-
-        4. PRESERVE other descriptive text in the question which is not related to product attributes.
         """
         chat_history = "\n".join([msg["content"] for msg in self.messages[-self.history_length:]]) if self.messages else "No history."
         rewrite_prompt = f"""Rewrite the current question for better document retrieval by:
@@ -179,20 +141,22 @@ class AIFSAgent:
             2. You should give only pure text. no emojis.
             3. Using these product attributes (USE THESE EXACT TERMS AND GIVE ONLY TOP VALUES FOR COLOR):
             {self.useful_feature_info}
-            4.You must provide at least the attributes "product group name", "color name" and "index group name".
-            5 PRESERVE any other information (not product attribute) in the chat history or the question itself that is related to the current question.
-            6. Example:
+            4. You must provide at least the attributes "product type name", "product group name", "colour group name" and "index group name".
+            6. If the user have directly provided the attribute "colour group name", you should use it directly.
+            7. FOR "index group name", YOU SHOULD ALWAYS REMEMBER IF THE CLIENT IS A MAN OR WOMAN.
+            8. PRESERVE any other information (not product attribute) in the chat history or the question itself that is related to the current question.
+            9. Example:
             - chat history: "How about his black one-piece dress?"
             question: "I don't like black, do you have another one?"
-            output: "product group name: Garment Full body; colour group name:blue|green; index group: Ladieswear; one-piece dress."
+            output: "product type name: dress; product group name: Garment Full body; colour group name:blue|green; index group: Ladieswear; one-piece dress."
 
             - chat history: "How about his yellow one-piece dress?"
             question: "I don't like light color, need more a upper-piece comfy for summer"
-            output: "product group name: Garment Upper body; colour group name:black|dark blue; index group name: Ladieswear; comfy for summer."
+            output: "product type name: Vest top; product group name: Garment Upper body; colour group name:black; index group name: Ladieswear; comfy for summer."
 
             - chat history: "How about his red one-piece dress?"
             question: "I am a man. I like the red color! I should be elegant!"
-            output: "product group name: Garment Upper body; colour group name: red; index group name: Menswear; elegant."
+            output: "product type name: Blazer; product group name: Garment Upper body; colour group name: red; index group name: Menswear; elegant."
 
             Chat History:
             {chat_history}
@@ -201,40 +165,107 @@ class AIFSAgent:
             {question}
 
             Rewritten Query (ONLY output the query, no explanations):"""
+        # rewrite_prompt = f"""Rewrite the current question for better document retrieval by:
+        #     1. Converting negatives to positives (e.g., "not black" → "red|blue")
+        #     2. You should give only pure text. no emojis.
+        #     3. Using these product attributes (USE THESE EXACT TERMS AND GIVE ONLY TOP VALUES FOR COLOR):
+        #     {self.useful_feature_info}
+        #     4. You must provide at least the attributes "product group name", "colour group name" and "index group name".
+        #     6. If the user have directly provided the attribute "colour group name", you should use it directly.
+        #     7. FOR "index group name", YOU SHOULD ALWAYS REMEMBER IF THE CLIENT IS A MAN OR WOMAN.
+        #     8. PRESERVE any other information (not product attribute) in the chat history or the question itself that is related to the current question.
+        #     9. Example:
+        #     - chat history: "How about his black one-piece dress?"
+        #     question: "I don't like black, do you have another one?"
+        #     output: "product group name: Garment Full body; colour group name:blue|green; index group: Ladieswear; one-piece dress."
+
+        #     - chat history: "How about his yellow one-piece dress?"
+        #     question: "I don't like light color, need more a upper-piece comfy for summer"
+        #     output: "product group name: Garment Upper body; colour group name:black; index group name: Ladieswear; comfy for summer."
+
+        #     - chat history: "How about his red one-piece dress?"
+        #     question: "I am a man. I like the red color! I should be elegant!"
+        #     output: "product group name: Garment Upper body; colour group name: red; index group name: Menswear; blazer, elegant."
+
+        #     Chat History:
+        #     {chat_history}
+
+        #     Current Question:
+        #     {question}
+
+        #     Rewritten Query (ONLY output the query, no explanations):"""
         response = self.client.chat.completions.create(
             model=self.chat_model,
             messages=[
                 {"role": "system", "content": "You are a search query optimization engine."},
                 {"role": "user", "content": rewrite_prompt}
             ],
-            temperature=0.1, 
+            temperature=0, 
             max_tokens=100
         )
         rewritten = response.choices[0].message.content.strip()
-        print(rewritten)
+        
         return rewritten
 
-    def preprocess_hm_knowledge_base(self):
+    # def preprocess_hm_knowledge_base(self):
+    #     """
+    #     This function preprocess the loaded H&M article information. 
+    #     """
+    #     # Select only the string columns
+    #     articles_info = self.hm_articles.select_dtypes('object')
+    #     # Build the combined texts
+    #     col_names = list(articles_info.columns)
+    #     useful_col_names = [col_name for col_name in col_names if col_name != "index_code"]
+    #     articles_info['combined'] = articles_info.apply(lambda x: "; ".join([col_name.replace("_", " ")+": "+str(x[col_name]).strip()
+    #                                                                          for col_name in useful_col_names 
+    #                                                                          if str(x[col_name]).strip() != "Unknown"]), axis=1)
+    #     # Evaluate the embeddings
+    #     article_embeddings = []
+    #     for _, combined_text in tqdm(articles_info['combined'].items(), total=articles_info.shape[0], desc="Processed examples"):
+    #         article_embeddings.append(self.get_embedding(combined_text))
+    #     articles_info['embedding'] = article_embeddings
+    #     # Add back the article id
+    #     articles_info['article_id'] = self.hm_articles['article_id']
+
+    #     return articles_info
+    
+    def preprocess_hm_knowledge_base_with_selected_columns(self):
         """
         This function preprocess the loaded H&M article information. 
         """
         # Select only the string columns
         articles_info = self.hm_articles.select_dtypes('object')
         # Build the combined texts
-        col_names = list(articles_info.columns)
-        useful_col_names = [col_name for col_name in col_names if col_name != "index_code"]
         articles_info['combined'] = articles_info.apply(lambda x: "; ".join([col_name.replace("_", " ")+": "+str(x[col_name]).strip()
-                                                                             for col_name in useful_col_names 
+                                                                             for col_name in hm_embedd_columns 
                                                                              if str(x[col_name]).strip() != "Unknown"]), axis=1)
         # Evaluate the embeddings
+        batch_size = 100
+        nb_examples = len(articles_info['combined'])
+        nb_batches = math.ceil(len(articles_info['combined']) / batch_size)
         article_embeddings = []
-        for _, combined_text in tqdm(articles_info['combined'].items(), total=articles_info.shape[0], desc="Processed examples"):
-            article_embeddings.append(self.get_embedding(combined_text))
+        for batch_id in tqdm(list(range(nb_batches)), desc="Processed batches"):
+            if batch_id == nb_batches-1:
+                current_batch_texts = articles_info['combined'][batch_id*batch_size:nb_examples].to_list()
+            else:
+                current_batch_texts = articles_info['combined'][batch_id*batch_size:(batch_id+1)*batch_size].to_list()
+            article_embeddings.append(self.get_embeddings(current_batch_texts))
+        article_embeddings = list(itertools.chain.from_iterable(article_embeddings))
         articles_info['embedding'] = article_embeddings
         # Add back the article id
         articles_info['article_id'] = self.hm_articles['article_id']
 
         return articles_info
+    
+    def get_embeddings(self, texts):
+        """
+        This function gets the embeddings for the H&M knowledge base.
+
+        texts: A batch of texts to get the embedding.
+        """
+        response = self.client.embeddings.create(input = texts, model=self.embedding_model)
+        embeddings = [item.embedding for item in response.data]
+        return embeddings
     
     def get_embedding(self, text):
         """
@@ -292,8 +323,8 @@ class AIFSAgent:
         origin_text: The original input text.
         k: The number of documents to gather.
         """
-        rag_text_embedding = self.get_embedding(rag_text)
-        rag_related_indices, _ = self.get_related_documents(rag_text_embedding, k=k)
+        rag_embedding = self.get_embedding(rag_text)
+        rag_related_indices, _ = self.get_related_documents(rag_embedding, k=k)
         post_process_index_dict = self.match_keywords(rag_related_indices, rag_text, origin_text)
         final_found_article_id = None
         if len(post_process_index_dict) > 0:
@@ -348,6 +379,34 @@ class AIFSAgent:
         4. Your response will be rejected if it omits any provided product
         """
         return rag_initial_context, seasonal_offer_indices
+    
+    def build_rag_user_input_keyword_match_with_image(self, user_input, image_desc, k=10):
+        """
+        This function builds the user input with contexts extracted by RAG.
+
+        user_input: The original user input.
+        image_desc: The image description.
+        k: The number of documents to obtain for keyword-matching.
+        """
+        combined_user_input = "\n".join([user_input, image_desc])
+        rag_search_input = self.rewrite_for_rag(combined_user_input)
+        rag_related_indices, rag_context = self.build_single_rag_context_with_post_processing(rag_search_input, user_input, k=k)
+        rag_user_input = f"""
+        System:
+        {system_role_content}
+
+        Product Information (MUST USE ALL):
+        {rag_context}
+
+        Question:
+        {user_input}
+
+        IMPORTANT INSTRUCTIONS:
+        1. You MUST explicitly mention, describe or recommend ALL products listed in the "Product Information" section
+        2. For each product, provide relevant details that connect it to the user's question
+        4. Your response will be rejected if it omits any provided product
+        """
+        return rag_user_input, rag_related_indices
     
     def build_rag_user_input_keyword_match(self, user_input, k=10):
         """
@@ -426,7 +485,125 @@ class AIFSAgent:
         except Exception as e:
             print(f"Error when calling the OpenAI API: {str(e)}")
             return RAG_ERROR_MESSAGE
+        
+    # This function applies a post-processing to match-keywords and determine similarity.
+    def match_keywords(self, article_indices, rag_search_input, input):
+        """
+        This function applies a post-processing to find the most macthed article in the found top-k ones.
 
+        article_indices: The found articles.
+        rag_search_input: The input built for the rag search.
+        input: The original input.
+        """
+        # Build the dictionary
+        article_key_match_dict = {}
+        combined_input = rag_search_input + input
+        print(combined_input)
+        print(article_indices)
+        lower_rag_search_input = rag_search_input.lower().strip()
+        for article_id in article_indices:
+            current_article_info = self.preprocessed_hm_articles.loc[article_id,:]
+            current_article_color = current_article_info["colour_group_name"].lower().strip()
+            nb_found_keys = 0
+            for col_name in rag_must_provide_info_cols:
+                current_article_col_val = current_article_info[col_name].lower().strip()
+                if col_name == "colour_group_name":
+                    if current_article_color == "gray" or current_article_color == "grey":
+                        if "gray" in lower_rag_search_input or "grey" in lower_rag_search_input:
+                            nb_found_keys += 1
+                    else:
+                        if current_article_color in lower_rag_search_input:
+                            nb_found_keys += 1
+                else:
+                    if current_article_col_val in lower_rag_search_input:
+                        nb_found_keys += 1
+            if current_article_color == "gray" or current_article_color == "grey":
+                if "gray" in lower_rag_search_input or "grey" in lower_rag_search_input:
+                    article_key_match_dict[article_id] = [nb_found_keys]
+            else:
+                if current_article_color in lower_rag_search_input:
+                    article_key_match_dict[article_id] = [nb_found_keys]
+        # Evaluate the reduced embedding similarity
+        for article_id in article_key_match_dict:
+            current_article_info = self.preprocessed_hm_articles.loc[article_id,:]
+            current_article_text = ";".join([col_name.replace("_"," ")+": "+current_article_info[col_name] for col_name in rag_must_provide_info_cols])
+            if not pd.isna(current_article_info["detail_desc"]):
+                current_article_text = current_article_text + "; " + current_article_info["detail_desc"]
+            current_embeddings = self.free_embedd_model.encode([combined_input, current_article_text])
+            article_key_match_dict[article_id].append(util.cos_sim(current_embeddings[0], current_embeddings[1]).item())
+        # Sort the remaining articles
+        sorted_key_match_dict = {k: v for k, v in sorted(article_key_match_dict.items(), key=lambda item: (item[1][0], item[1][1]), reverse=True)}
+        # for key in sorted_key_match_dict:
+        #     print(self.preprocessed_hm_articles.loc[key, "combined"])
+
+        return sorted_key_match_dict
+    
+    def image_description(self, image_path, max_attempts=3):
+        """
+        This function gets the image description with the OpenAI vision model.
+
+        image_path: The path to the image.
+        max_attempts: The maximum number of the attempts.
+        """
+        try:
+            # Encode the image
+            base64_image = encode_and_resize_image(image_path)
+            # The image description prompt
+            image_desc_prompt = f"""
+            [SYSTEM INSTRUCTIONS]
+            You are a fashion garment analysis tool. Analyze ONLY the clothing/accessory itself:
+            - Ignore all human faces/body features
+            - Describe the item as if it were on a mannequin
+
+            [REQUIRED OUTPUT]
+            - product type: [e.g., "T-shirt", "jeans", "crossbody bag"]
+            - style: [e.g., "casual", "formal", "sporty", "bohemian"]
+            - category: [ONLY: top/lower/full-body/accessory]
+            - colour group name: [red/blue/green/black/white/gray/pink/purple/yellow/brown]
+            - gender: [men/women/children/unisex (based on design, not wearer)]
+            - details: [1 fact like "stretchy denim", "metal zipper" or "long sleeves"]
+
+            [RULES]
+            - REJECT if describing people
+            - Use ONLY observable features
+            - Example: "Women's v-neck top in black (polyester with lace trim)"
+            """
+            for attempt in range(max_attempts):
+                # Get the description response
+                response = self.client.chat.completions.create(
+                    model=self.vision_desc_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": image_desc_prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}",
+                                        "detail": "high",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                    max_tokens=200,
+                    temperature=0.2,
+                )
+                agent_message = response.choices[0].message.content.strip()
+                # Verify the response
+                try:
+                    verif_bools = [elem in agent_message for elem in image_desc_keyword_verify]
+                    if all(verif_bools):
+                        return agent_message
+                    else:
+                        raise ValueError(f"Missing required keywords.")
+                except (ValueError) as e:
+                    print(f"Attempt {attempt + 1} failed: {e}")
+                    if attempt == max_attempts - 1:
+                        return IMAGE_DESC_FAILURE_MESSAGE
+        except Exception as e:
+            return IMAGE_DESC_FAILURE_MESSAGE
 
     ##### The following functions are the functions for chatting.
     def add_message(self, role, content):

@@ -5,6 +5,9 @@ import csv
 import json
 import shutil
 import requests
+import base64
+import io
+import cv2
 from common_imports import np, pd, os, Image
 
 """
@@ -119,3 +122,145 @@ def download_image_from_url(img_url, save_path=None):
     if save_path is not None:
         img.save(save_path)
     return img
+
+def encode_image(image_path):
+    """
+    This function encodes the image into a base64 format.
+
+    image_path: The path to the image.
+    """
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+    
+def encode_and_resize_image(image_path, max_size=1024):
+    """
+    This function resizes the image under the max size and then return the base64 encoding.
+
+    image_path: The path to the image.
+    max_size: The max size of the image.
+    """
+    with Image.open(image_path) as img:
+        # Compute the scale and resize the image
+        width, height = img.size
+        if max(width, height) > max_size:
+            scale = max_size / max(width, height)
+            new_size = (int(width * scale), int(height * scale))
+            img = img.resize(new_size, Image.LANCZOS)
+        
+        # Change it to jpeg
+        with io.BytesIO() as buffered:
+            img.save(buffered, format="JPEG", quality=85)  
+            
+            # return the encoding
+            return base64.b64encode(buffered.getvalue()).decode('utf-8')
+        
+def anonymize_fashion_image(image_path, output_path="temp.jpg"):
+    """
+    Blur faces and body features while preserving clothing details
+    
+    image_path: Path to input image
+    output_path: Path to save processed image (default: "temp.jpg")
+    """
+    # Load the model
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+    upper_body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_upperbody.xml')
+    
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = img.shape[:2]
+
+    # The function to make all human-related part blurry
+    def super_blur(roi):
+        # Gaussian blur
+        blurred = cv2.GaussianBlur(roi, (199,199), 50)
+        
+        # Pixelation
+        pixel_size = 20
+        h, w = roi.shape[:2]
+        temp = cv2.resize(blurred, (w//pixel_size, h//pixel_size), 
+                         interpolation=cv2.INTER_LINEAR)
+        pixelated = cv2.resize(temp, (w,h), interpolation=cv2.INTER_NEAREST)
+        
+        # Mosaic
+        mosaic_size = 15
+        for y in range(0, h, mosaic_size):
+            for x in range(0, w, mosaic_size):
+                pixelated[y:y+mosaic_size, x:x+mosaic_size] = np.mean(
+                    pixelated[y:y+mosaic_size, x:x+mosaic_size], axis=(0,1))
+        
+        return pixelated
+
+    # Detect the sensitive areas
+    detections = []
+    detections.extend(face_cascade.detectMultiScale(gray, 1.1, 5))
+    detections.extend(profile_cascade.detectMultiScale(gray, 1.1, 5))
+    detections.extend(upper_body_cascade.detectMultiScale(gray, 1.1, 5))
+
+    # Augment the skin detection
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    skin_mask = cv2.inRange(hsv, (0, 48, 80), (20, 255, 255))
+    skin_mask = cv2.dilate(skin_mask, np.ones((11,11)), iterations=2)
+    
+    # Combine the area
+    mask = np.zeros((h,w), dtype=np.uint8)
+    for (x,y,w,h) in detections:
+        cv2.rectangle(mask, (x,y), (x+w,y+h), 255, -1)
+    mask = cv2.bitwise_or(mask, skin_mask)
+
+    # Border blur
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours:
+        if cv2.contourArea(cnt) > 500:
+            x,y,w,h = cv2.boundingRect(cnt)
+            x,y,w,h = max(0,x-30), max(0,y-30), min(w,w+60), min(h,h+60)
+            img[y:y+h, x:x+w] = super_blur(img[y:y+h, x:x+w])
+    
+    cv2.imwrite(output_path, img)
+    return output_path
+
+def whiten_fashion_image(image_path, output_path="temp.jpg"):
+    """
+    Replace detected human regions with pure white
+
+    image_path: Path to input image
+    output_path: Output path (default: "temp.jpg")
+    """
+    # Load all detection models
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+    upper_body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_upperbody.xml')
+    body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fullbody.xml')
+    
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = img.shape[:2]
+
+    # Create pure white canvas
+    white_mask = np.zeros_like(img)
+    white_mask[:] = (255, 255, 255)  # BGR white
+
+    # Combined detection from all models
+    detections = []
+    detections.extend(face_cascade.detectMultiScale(gray, 1.1, 5))
+    detections.extend(profile_cascade.detectMultiScale(gray, 1.1, 5))
+    detections.extend(upper_body_cascade.detectMultiScale(gray, 1.1, 5))
+    detections.extend(body_cascade.detectMultiScale(gray, 1.05, 5))
+
+    # Skin tone detection (HSV color space)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    skin_mask = cv2.inRange(hsv, (0, 48, 80), (20, 255, 255))
+    skin_mask = cv2.dilate(skin_mask, np.ones((11,11)), iterations=2)
+    
+    # Apply white mask to all detected regions
+    for (x, y, w, h) in detections:
+        # Expand detection area by 15 pixels
+        x, y = max(0, x-15), max(0, y-15)
+        w, h = min(w+30, img.shape[1]-x), min(h+30, img.shape[0]-y)
+        img[y:y+h, x:x+w] = white_mask[y:y+h, x:x+w]
+    
+    # Whiten all skin areas
+    img[skin_mask == 255] = (255, 255, 255)
+
+    cv2.imwrite(output_path, img)
+    return output_path
