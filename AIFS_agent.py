@@ -58,7 +58,7 @@ class AIFSAgent:
         # Free embedding model
         self.free_embedd_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
         # The chat history length to use
-        self.history_length = 3
+        self.history_length = 2
 
     # Season determination
     def get_season(self, date):
@@ -200,7 +200,7 @@ class AIFSAgent:
                 {"role": "system", "content": "You are a search query optimization engine."},
                 {"role": "user", "content": rewrite_prompt}
             ],
-            temperature=0, 
+            temperature=0.1, 
             max_tokens=100
         )
         rewritten = response.choices[0].message.content.strip()
