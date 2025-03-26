@@ -31,8 +31,8 @@ Open a terminal and execute "python main.py".
 - The "Upload Image" button is for cases where you would like to provide an example of the fashion item you want to find.
 
 ### Example of conversation
-![alt text](https://github.com/doomoftheworld/AIFS/tree/main/chat_examples/Frame1.png "Conversation turn 1")
-![alt text](https://github.com/doomoftheworld/AIFS/tree/main/chat_examples/Frame2.png "Conversation turn 2")
-![alt text](https://github.com/doomoftheworld/AIFS/tree/main/chat_examples/Frame3.png "Conversation turn 3")
-![alt text](https://github.com/doomoftheworld/AIFS/tree/main/chat_examples/Frame4.png "Conversation turn 4-1")
-![alt text](https://github.com/doomoftheworld/AIFS/tree/main/chat_examples/Frame5.png "Conversation turn 4-2")
+![Example Image](chat_examples/Frame1.png)
+![Example Image](chat_examples/Frame2.png)
+![Example Image](chat_examples/Frame3.png)
+![Example Image](chat_examples/Frame4.png)
+![Example Image](chat_examples/Frame5.png)
