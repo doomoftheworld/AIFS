@@ -72,6 +72,8 @@ class AIFSChatApp:
         self.send_button.config(state=tk.DISABLED) # Disable the send button
         # Get the initial system context
         initial_greeting_context, seasonal_offer_indices = self.agent.build_rag_initial_context(k=self.initial_greeting_k)
+        # Display the found articles
+        print("Found articles for the initial greeting:")
         for article_id in seasonal_offer_indices:
             print(self.agent.preprocessed_hm_articles.loc[article_id, "combined"])
         # Add the initial fake message to give the context
@@ -101,7 +103,6 @@ class AIFSChatApp:
             self.upload_image_path = image_path
             # Display only the selected file
             self.path_display.config(text=f"Selected: {image_path}")
-            print(self.upload_image_path)
 
     def handle_user_input(self, event=None):
         """
@@ -161,7 +162,8 @@ class AIFSChatApp:
             combined_user_input = "\n".join([user_input, image_desc])
             # Determine the question type
             question_type = self.agent.analyze_question_type(combined_user_input)
-            print(question_type)
+            # Display the analyzed question type
+            print("The analyzed question type:", question_type)
             # Determine if the RAG should be applied and generate context-included input
             modified_user_input = None
             if question_type == "other":
@@ -178,6 +180,8 @@ class AIFSChatApp:
             else:
                 # Set the user input
                 modified_user_input, article_indices = self.agent.build_rag_user_input_keyword_match_with_image(user_input, image_desc, k=self.rag_k_keyword)
+                # Display the found articles
+                print("Found articles:")
                 for article_id in article_indices:
                     print(self.agent.preprocessed_hm_articles.loc[article_id, "combined"])
                 # Add the message to the agent history
@@ -204,7 +208,8 @@ class AIFSChatApp:
         """
         # Determine the question type
         question_type = self.agent.analyze_question_type(user_input)
-        print(question_type)
+        # Display the analyzed question type
+        print("The analyzed question type:", question_type)
         # Determine if the RAG should be applied and generate context-included input
         modified_user_input = None
         if question_type == "other":
@@ -221,6 +226,8 @@ class AIFSChatApp:
         else:
             # Set the user input
             modified_user_input, article_indices = self.agent.build_rag_user_input_keyword_match(user_input, k=self.rag_k_keyword)
+            # Display the found articles
+            print("Found articles:")
             for article_id in article_indices:
                 print(self.agent.preprocessed_hm_articles.loc[article_id, "combined"])
             # Add the message to the agent history

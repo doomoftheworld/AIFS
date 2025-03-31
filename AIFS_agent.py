@@ -328,7 +328,7 @@ class AIFSAgent:
         post_process_index_dict = self.match_keywords(rag_related_indices, rag_text, origin_text)
         final_found_article_id = None
         if len(post_process_index_dict) > 0:
-            print("Found a matched article.")
+            print("Found a matched article for the user's question.")
             final_found_article_id =  list(post_process_index_dict.keys())[0] 
         else:
             final_found_article_id =  rag_related_indices[0]
@@ -533,8 +533,6 @@ class AIFSAgent:
             article_key_match_dict[article_id].append(util.cos_sim(current_embeddings[0], current_embeddings[1]).item())
         # Sort the remaining articles
         sorted_key_match_dict = {k: v for k, v in sorted(article_key_match_dict.items(), key=lambda item: (item[1][0], item[1][1]), reverse=True)}
-        # for key in sorted_key_match_dict:
-        #     print(self.preprocessed_hm_articles.loc[key, "combined"])
 
         return sorted_key_match_dict
     
