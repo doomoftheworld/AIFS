@@ -498,8 +498,7 @@ class AIFSAgent:
         # Build the dictionary
         article_key_match_dict = {}
         combined_input = rag_search_input + input
-        print(combined_input)
-        print(article_indices)
+        print("RAG search info:", combined_input)
         lower_rag_search_input = rag_search_input.lower().strip()
         for article_id in article_indices:
             current_article_info = self.preprocessed_hm_articles.loc[article_id,:]
